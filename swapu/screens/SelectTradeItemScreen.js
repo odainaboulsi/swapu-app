@@ -34,13 +34,14 @@ export default function SelectTradeItemScreen({ navigation }) {
     navigation.navigate('Swipe', { myItem: item });
   };
 
-  const getTierColor = (tier) => {
-    if (tier?.includes('Micro')) return '#81C784';
-    if (tier?.includes('Low')) return '#64B5F6';
-    if (tier?.includes('Medium')) return '#FFB74D';
-    if (tier?.includes('High')) return '#E57373';
-    if (tier?.includes('Premium')) return '#BA68C8';
-    return '#999';
+  const getConditionColor = (condition) => {
+    switch(condition) {
+      case 'New': return '#4CAF50';
+      case 'Like New': return '#81C784';
+      case 'Good': return '#FFB74D';
+      case 'Fair': return '#E57373';
+      default: return '#999';
+    }
   };
 
   if (loading) {
@@ -59,7 +60,7 @@ export default function SelectTradeItemScreen({ navigation }) {
         <Text style={styles.subText}>Post an item first, then come back to trade!</Text>
         <TouchableOpacity 
           style={styles.button}
-          onPress={() => navigation.navigate('PostTab')}
+          onPress={() => navigation.navigate('Post')}
         >
           <Text style={styles.buttonText}>Post an Item</Text>
         </TouchableOpacity>
@@ -89,9 +90,11 @@ export default function SelectTradeItemScreen({ navigation }) {
             <View style={styles.itemInfo}>
               <Text style={styles.itemTitle}>{item.title}</Text>
               
-              <View style={[styles.tierBadge, { backgroundColor: getTierColor(item.value_tier) }]}>
-                <Text style={styles.tierText}>{item.value_tier || 'Unknown'}</Text>
-              </View>
+              {item.condition && (
+                <View style={[styles.conditionBadge, { backgroundColor: getConditionColor(item.condition) }]}>
+                  <Text style={styles.conditionText}>{item.condition}</Text>
+                </View>
+              )}
               
               <Text style={styles.itemCategory}>{item.category || 'Uncategorized'}</Text>
               <Text style={styles.tapHint}>Tap to trade this →</Text>
@@ -154,14 +157,14 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 5,
   },
-  tierBadge: {
+  conditionBadge: {
     alignSelf: 'flex-start',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
     marginBottom: 5,
   },
-  tierText: {
+  conditionText: {
     color: '#fff',
     fontSize: 12,
     fontWeight: 'bold',

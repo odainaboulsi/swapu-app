@@ -122,7 +122,7 @@ export default function MyItemsScreen({ navigation }) {
           <Text style={styles.emptyText}>No available items. Post an item or check completed trades.</Text>
           <TouchableOpacity 
             style={styles.postButton}
-            onPress={() => navigation.navigate('PostTab')}
+            onPress={() => navigation.navigate('Post')}
           >
             <Text style={styles.postButtonText}>+ Post New Item</Text>
           </TouchableOpacity>
@@ -131,7 +131,7 @@ export default function MyItemsScreen({ navigation }) {
         <>
           <TouchableOpacity 
             style={styles.postButtonTop}
-            onPress={() => navigation.navigate('PostTab')}
+            onPress={() => navigation.navigate('Post')}
           >
             <Text style={styles.postButtonText}>+ Post New Item</Text>
           </TouchableOpacity>

@@ -1,19 +1,29 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Dimensions, Image, TouchableOpacity, Modal, Alert } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { 
+  View, 
+  Text, 
+  StyleSheet, 
+  ActivityIndicator, 
+  Dimensions, 
+  Image, 
+  TouchableOpacity, 
+  Modal, 
+  Alert 
+} from 'react-native';
 import Swiper from 'react-native-deck-swiper';
 import * as Location from 'expo-location';
 import { supabase } from '../supabase';
 import { useAuth } from '../AuthContext';
+import { useTokens } from '../hooks/useTokens';
 
 const { width, height } = Dimensions.get('window');
 
 const CASH_OPTIONS = [0, 5, 10, 15, 20, 25];
 
-// Calculate distance between two coordinates in miles
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
   if (!lat1 || !lon1 || !lat2 || !lon2) return null;
   
-  const R = 3959; // Earth's radius in miles
+  const R = 3959;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = 
@@ -24,7 +34,6 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
   return R * c;
 };
 
-// Format distance for display
 const formatDistance = (miles) => {
   if (miles === null || miles === undefined) return 'Nearby';
   if (miles < 0.1) return 'Same campus';
@@ -34,27 +43,20 @@ const formatDistance = (miles) => {
   return `${Math.round(miles)} mi away`;
 };
 
-// Get numeric tier level for comparison
-const getTierLevel = (tierName) => {
-  if (!tierName) return 0;
-  if (tierName.includes('Micro')) return 1;
-  if (tierName.includes('Low')) return 2;
-  if (tierName.includes('Medium')) return 3;
-  if (tierName.includes('High')) return 4;
-  if (tierName.includes('Premium')) return 5;
-  return 0;
-};
-
 export default function SwipeScreen({ route, navigation }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCashModal, setShowCashModal] = useState(false);
   const [currentItem, setCurrentItem] = useState(null);
   const [selectedCash, setSelectedCash] = useState(0);
+  const [isSuperOffer, setIsSuperOffer] = useState(false);
   const [userLocation, setUserLocation] = useState(null);
-  const { user } = useAuth();
+  const [imageIndexes, setImageIndexes] = useState({}); // Track current photo index per item
   
-  // Get the item user selected to trade
+  const swiperRef = useRef(null);
+  const { user } = useAuth();
+  const { balance, spendTokens, refresh: refreshTokens } = useTokens();
+  
   const myItem = route.params?.myItem;
 
   useEffect(() => {
@@ -63,6 +65,7 @@ export default function SwipeScreen({ route, navigation }) {
       return;
     }
     getUserLocation();
+    refreshTokens();
   }, [myItem]);
 
   const getUserLocation = async () => {
@@ -84,72 +87,47 @@ export default function SwipeScreen({ route, navigation }) {
 
   const fetchItems = async () => {
     try {
-      console.log('Fetching items for tier:', myItem.value_tier);
-      
-      const myMin = myItem.value_min;
-      const myMax = myItem.value_max;
-      
       const { data, error } = await supabase
         .from('items')
         .select('*')
         .neq('user_id', 'anonymous')
         .not('user_id', 'is', null)
         .neq('user_id', user?.id)
-        .or(`value_min.gte.${myMin - 25},and(value_min.gte.${myMin},value_min.lte.${myMax + 25})`)
         .order('created_at', { ascending: false })
         .eq('status', 'available');
       
       if (error) throw error;
       
-      // Process items with unique keys and distance
-      const seenIds = new Set();
-      const itemsWithDistance = (data || [])
-        .filter(item => {
-          if (!item.id || seenIds.has(item.id)) return false;
-          seenIds.add(item.id);
-          return true;
-        })
-        .map((item) => {
-          const distance = calculateDistance(
-            userLocation?.latitude,
-            userLocation?.longitude,
-            item.latitude,
-            item.longitude
-          );
-          
-          const myTierLevel = getTierLevel(myItem.value_tier);
-          const theirTierLevel = getTierLevel(item.value_tier);
-          
-          let tierDiff = 'same';
-          if (theirTierLevel > myTierLevel) tierDiff = 'above';
-          else if (theirTierLevel < myTierLevel) tierDiff = 'below';
-          
-          return {
-            ...item,
-            _tierDiff: tierDiff,
-            _theirTierLevel: theirTierLevel,
-            _myTierLevel: myTierLevel,
-            distance: distance,
-            distanceText: formatDistance(distance)
-          };
-        });
+      // Process items with distance
+      const processedItems = (data || []).map((item) => {
+        const distance = calculateDistance(
+          userLocation?.latitude,
+          userLocation?.longitude,
+          item.latitude,
+          item.longitude
+        );
+        
+        return {
+          ...item,
+          distance: distance,
+          distanceText: formatDistance(distance),
+          // Handle both old single image and new array format
+          images: item.image_urls && item.image_urls.length > 0 
+            ? item.image_urls 
+            : item.image_url 
+              ? [item.image_url] 
+              : []
+        };
+      });
 
-      // Sort by distance, then tier compatibility
-      itemsWithDistance.sort((a, b) => {
+      processedItems.sort((a, b) => {
         if (a.distance !== null && b.distance !== null) {
-          if (a.distance < 0.5 && b.distance >= 0.5) return -1;
-          if (b.distance < 0.5 && a.distance >= 0.5) return 1;
-          if (Math.abs(a.distance - b.distance) > 1) {
-            return a.distance - b.distance;
-          }
+          return a.distance - b.distance;
         }
-        if (a._tierDiff === 'same' && b._tierDiff !== 'same') return -1;
-        if (b._tierDiff === 'same' && a._tierDiff !== 'same') return 1;
         return 0;
       });
       
-      console.log('Fetched items:', itemsWithDistance.length);
-      setItems(itemsWithDistance);
+      setItems(processedItems);
     } catch (error) {
       console.error('Error fetching items:', error);
     } finally {
@@ -157,9 +135,53 @@ export default function SwipeScreen({ route, navigation }) {
     }
   };
 
-  const handleSwipeRight = (cardIndex) => {
+  // Photo navigation functions
+  const goToNextImage = useCallback((itemId) => {
+    setImageIndexes(prev => {
+      const currentIndex = prev[itemId] || 0;
+      const item = items.find(i => i.id === itemId);
+      const maxIndex = item?.images?.length ? item.images.length - 1 : 0;
+      
+      if (currentIndex < maxIndex) {
+        return { ...prev, [itemId]: currentIndex + 1 };
+      }
+      return prev;
+    });
+  }, [items]);
+
+  const goToPrevImage = useCallback((itemId) => {
+    setImageIndexes(prev => {
+      const currentIndex = prev[itemId] || 0;
+      
+      if (currentIndex > 0) {
+        return { ...prev, [itemId]: currentIndex - 1 };
+      }
+      return prev;
+    });
+  }, []);
+
+  const handleRegularOffer = (cardIndex) => {
     const item = items[cardIndex];
     setCurrentItem(item);
+    setIsSuperOffer(false);
+    setSelectedCash(0);
+    setShowCashModal(true);
+  };
+
+  const handleSuperOffer = (cardIndex) => {
+    const item = items[cardIndex];
+    
+    if (balance < 1) {
+      Alert.alert(
+        'Not enough tokens',
+        'You need 1 token to send a Super Offer.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    setCurrentItem(item);
+    setIsSuperOffer(true);
     setSelectedCash(0);
     setShowCashModal(true);
   };
@@ -168,77 +190,182 @@ export default function SwipeScreen({ route, navigation }) {
     console.log('Passed on:', items[cardIndex]?.title);
   };
 
-const submitLike = async () => {
-  setShowCashModal(false);
-  
-  try {
-    // Save the like
-    const { error: insertError } = await supabase
-      .from('likes')
-      .insert([{
+  const submitOffer = async () => {
+    setShowCashModal(false);
+    
+    try {
+      let likeId = null;
+      
+      const likeData = {
         user_id: user.id,
         item_id: currentItem.id,
         my_item_id: myItem.id,
         cash_offer: selectedCash,
+        is_super: isSuperOffer,
+        is_unlocked: isSuperOffer,
+        is_viewed: false,
         status: 'pending'
-      }]);
+      };
+      
+      const { data: insertedLike, error: insertError } = await supabase
+        .from('likes')
+        .insert(likeData)
+        .select()
+        .single();
+      
+      if (insertError) throw insertError;
+      likeId = insertedLike.id;
+      
+      if (isSuperOffer) {
+        const result = await spendTokens(1, 'super_offer', likeId);
+        if (!result.success) {
+          await supabase.from('likes').delete().eq('id', likeId);
+          Alert.alert('Error', 'Could not process Super Offer.');
+          return;
+        }
+      }
 
-    if (insertError) throw insertError;
+      const { data: mutualLikes } = await supabase
+        .from('likes')
+        .select('*')
+        .eq('user_id', currentItem.user_id)
+        .eq('item_id', myItem.id)
+        .eq('my_item_id', currentItem.id)
+        .eq('status', 'pending');
 
-    // Check for mutual like
-    const { data: mutualLikes, error: mutualError } = await supabase
-      .from('likes')
-      .select('*')
-      .eq('user_id', currentItem.user_id)
-      .eq('item_id', myItem.id)
-      .eq('my_item_id', currentItem.id)
-      .eq('status', 'pending');
-
-    if (mutualError) throw mutualError;
-
-    // Match found!
-    if (mutualLikes && mutualLikes.length > 0) {
-      navigation.navigate('Match', { 
-        theirItem: currentItem, 
-        myItem: myItem,
-        theirCashOffer: mutualLikes[0].cash_offer || 0,
-        myCashOffer: selectedCash
-      });
-    } else {
-      alert(`Offer sent! Waiting for them to respond...`);
+      if (mutualLikes && mutualLikes.length > 0) {
+        navigation.navigate('Match', { 
+          theirItem: currentItem, 
+          myItem: myItem,
+          theirCashOffer: mutualLikes[0].cash_offer || 0,
+          myCashOffer: selectedCash
+        });
+      } else {
+        Alert.alert(
+          isSuperOffer ? '⭐ Super Offer Sent!' : 'Offer Sent',
+          isSuperOffer 
+            ? 'They\'ll see your offer immediately with full details!'
+            : 'Offer sent! Waiting for them to respond...'
+        );
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      Alert.alert('Error', 'Something went wrong. Try again!');
     }
-
-  } catch (error) {
-    console.error('Error:', error);
-    alert('Something went wrong. Try again!');
-  }
-};
-
-
-  const getTierColor = (tier) => {
-    if (tier?.includes('Micro')) return '#81C784';
-    if (tier?.includes('Low')) return '#64B5F6';
-    if (tier?.includes('Medium')) return '#FFB74D';
-    if (tier?.includes('High')) return '#E57373';
-    if (tier?.includes('Premium')) return '#BA68C8';
-    return '#999';
   };
 
-  const getCashSuggestion = (item) => {
-    const myTierLevel = item._myTierLevel;
-    const theirTierLevel = item._theirTierLevel;
+  const getConditionColor = (condition) => {
+    switch(condition) {
+      case 'New': return '#4CAF50';
+      case 'Like New': return '#81C784';
+      case 'Good': return '#FFB74D';
+      case 'Fair': return '#E57373';
+      default: return '#999';
+    }
+  };
+
+  // Render card with photo tap zones
+  const renderCard = (item) => {
+    const currentImageIndex = imageIndexes[item.id] || 0;
+    const hasMultipleImages = item.images.length > 1;
+    const currentImageUrl = item.images[currentImageIndex] || item.image_url;
     
-    if (theirTierLevel > myTierLevel) {
-      const avgTheirValue = (item.value_min + item.value_max) / 2;
-      const avgMyValue = (myItem.value_min + myItem.value_max) / 2;
-      const diff = Math.max(0, avgTheirValue - avgMyValue);
-      const maxCash = Math.min(25, Math.ceil(diff / 5) * 5);
-      return `Add up to $${maxCash} to even out`;
-    }
-    if (theirTierLevel < myTierLevel) {
-      return `They may offer you cash`;
-    }
-    return `Same tier - fair 1:1 trade`;
+    return (
+      <View style={styles.card}>
+        {/* Top bar with badges */}
+        <View style={styles.topBar}>
+          <View style={styles.leftBadges}>
+            {item.condition && (
+              <View style={[styles.conditionBadge, { backgroundColor: getConditionColor(item.condition) }]}>
+                <Text style={styles.badgeText}>{item.condition}</Text>
+              </View>
+            )}
+          </View>
+          
+          <View style={styles.distanceBadge}>
+            <Text style={styles.distanceText}>📍 {item.distanceText}</Text>
+          </View>
+        </View>
+        
+        {/* Image Container with Tap Zones */}
+        <View style={styles.imageContainer}>
+          {currentImageUrl ? (
+            <Image 
+              source={{ uri: currentImageUrl }} 
+              style={styles.cardImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.imagePlaceholder}>
+              <Text style={styles.placeholderText}>No Image</Text>
+            </View>
+          )}
+          
+          {/* Photo Progress Indicator */}
+          {hasMultipleImages && (
+            <View style={styles.progressContainer}>
+              {item.images.map((_, idx) => (
+                <View 
+                  key={idx} 
+                  style={[
+                    styles.progressDot,
+                    idx === currentImageIndex && styles.progressDotActive
+                  ]} 
+                />
+              ))}
+            </View>
+          )}
+          
+          {/* Photo Counter */}
+          {hasMultipleImages && (
+            <View style={styles.photoCounter}>
+              <Text style={styles.photoCounterText}>
+                {currentImageIndex + 1}/{item.images.length}
+              </Text>
+            </View>
+          )}
+          
+          {/* Invisible Tap Zones - Only if multiple images */}
+          {hasMultipleImages && (
+            <>
+              {/* Left Zone - Previous */}
+              <TouchableOpacity 
+                style={[styles.navZone, styles.navZoneLeft]}
+                onPress={() => goToPrevImage(item.id)}
+                activeOpacity={1}
+              />
+              
+              {/* Right Zone - Next */}
+              <TouchableOpacity 
+                style={[styles.navZone, styles.navZoneRight]}
+                onPress={() => goToNextImage(item.id)}
+                activeOpacity={1}
+              />
+            </>
+          )}
+        </View>
+        
+        {/* Card Content */}
+        <View style={styles.cardContent}>
+          <Text style={styles.title}>{item.title}</Text>
+          <Text style={styles.category}>{item.category || 'Uncategorized'}</Text>
+          {item.description && (
+            <Text style={styles.description} numberOfLines={2}>
+              {item.description}
+            </Text>
+          )}
+          {item.interested_in_tags && item.interested_in_tags.length > 0 && (
+            <View style={styles.tagsRow}>
+              <Text style={styles.tagsLabel}>Want: </Text>
+              <Text style={styles.tagsText} numberOfLines={1}>
+                {item.interested_in_tags.slice(0, 3).join(', ')}
+                {item.interested_in_tags.length > 3 && '...'}
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+    );
   };
 
   if (loading) {
@@ -254,137 +381,100 @@ const submitLike = async () => {
     return (
       <View style={styles.container}>
         <Text style={styles.header}>No matches found</Text>
-        <Text style={styles.subText}>No items available in your tier range. Try posting more items or check back later!</Text>
-        <TouchableOpacity 
-          style={styles.button}
-          onPress={() => navigation.navigate('Post')}
-        >
-          <Text style={styles.buttonText}>Post New Item</Text>
-        </TouchableOpacity>
+        <Text style={styles.subText}>No items available. Check back later!</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <View style={styles.tradingHeader}>
-        <Text style={styles.tradingLabel}>You're trading:</Text>
-        <View style={styles.myItemBadge}>
-          <Text style={styles.myItemText} numberOfLines={1}>{myItem?.title}</Text>
-          <View style={[styles.tierDot, { backgroundColor: getTierColor(myItem?.value_tier) }]} />
-          <Text style={styles.myItemTier}>{myItem?.value_tier}</Text>
+      {/* Header */}
+      <View style={styles.headerContainer}>
+        <View style={styles.tradeItemInfo}>
+          <Text style={styles.tradingLabel}>Trading:</Text>
+          <Text style={styles.tradingItem} numberOfLines={1}>{myItem?.title}</Text>
+        </View>
+        <View style={styles.tokenBalance}>
+          <Text style={styles.tokenText}>🪙 {balance}</Text>
         </View>
       </View>
 
-      <Text style={styles.header}>Swipe to Find Trades</Text>
-      <Text style={styles.subHeader}>{items.length} potential matches</Text>
+      <Text style={styles.subHeader}>{items.length} items nearby</Text>
       
+      {/* Swiper */}
       <View style={styles.swiperContainer}>
         <Swiper
+          ref={swiperRef}
           cards={items}
-          renderCard={(item) => (
-            <View style={styles.card}>
-              <View style={styles.topBar}>
-                <View style={styles.leftBadges}>
-                  <View style={[styles.tierBadge, { backgroundColor: getTierColor(item.value_tier) }]}>
-                    <Text style={styles.tierBadgeText}>{item.value_tier}</Text>
-                  </View>
-                  {item._tierDiff !== 'same' && (
-                    <View style={[styles.diffBadge, { 
-                      backgroundColor: item._tierDiff === 'above' ? '#E57373' : '#81C784' 
-                    }]}>
-                      <Text style={styles.diffBadgeText}>
-                        {item._tierDiff === 'above' ? '↑ Higher' : '↓ Lower'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                
-                <View style={styles.distanceBadge}>
-                  <Text style={styles.distanceText}>📍 {item.distanceText}</Text>
-                </View>
-              </View>
-              
-              {item.image_url ? (
-                <Image 
-                  source={{ uri: item.image_url }} 
-                  style={styles.cardImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={styles.imagePlaceholder}>
-                  <Text style={styles.placeholderText}>No Image</Text>
-                </View>
-              )}
-              
-              <View style={styles.cardContent}>
-                <Text style={styles.title}>{item.title}</Text>
-                <Text style={styles.category}>{item.category || 'Uncategorized'}</Text>
-                <Text style={styles.suggestion}>{getCashSuggestion(item)}</Text>
-              </View>
-            </View>
-          )}
-          onSwipedRight={handleSwipeRight}
+          renderCard={renderCard}
+          onSwipedRight={handleRegularOffer}
           onSwipedLeft={handleSwipeLeft}
+          onSwipedTop={handleSuperOffer}
           cardIndex={0}
           backgroundColor={'transparent'}
           stackSize={3}
           infinite={true}
           showSecondCard={true}
+          verticalSwipe={true}
+          verticalThreshold={100}
+          horizontalThreshold={100}
           overlayLabels={{
             left: {
               title: 'PASS',
               style: {
-                label: {
-                  backgroundColor: 'red',
-                  color: 'white',
-                  fontSize: 24,
-                  borderRadius: 10,
-                  padding: 10,
-                  fontWeight: 'bold'
-                },
-                wrapper: {
-                  flexDirection: 'column',
-                  alignItems: 'flex-end',
-                  justifyContent: 'flex-start',
-                  marginTop: 20,
-                  marginLeft: -20
-                }
+                label: { backgroundColor: 'red', color: 'white', fontSize: 24, borderRadius: 10, padding: 10, fontWeight: 'bold' },
+                wrapper: { flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'flex-start', marginTop: 20, marginLeft: -20 }
               }
             },
             right: {
               title: 'TRADE',
               style: {
-                label: {
-                  backgroundColor: 'green',
-                  color: 'white',
-                  fontSize: 24,
-                  borderRadius: 10,
-                  padding: 10,
-                  fontWeight: 'bold'
-                },
-                wrapper: {
-                  flexDirection: 'column',
-                  alignItems: 'flex-start',
-                  justifyContent: 'flex-start',
-                  marginTop: 20,
-                  marginLeft: 20
-                }
+                label: { backgroundColor: 'green', color: 'white', fontSize: 24, borderRadius: 10, padding: 10, fontWeight: 'bold' },
+                wrapper: { flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'flex-start', marginTop: 20, marginLeft: 20 }
+              }
+            },
+            top: {
+              title: '⭐ SUPER',
+              style: {
+                label: { backgroundColor: '#FFD700', color: '#000', fontSize: 24, borderRadius: 10, padding: 10, fontWeight: 'bold' },
+                wrapper: { flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 20 }
               }
             }
           }}
         />
       </View>
       
-      <View style={styles.instructions}>
-        <Text style={styles.instructionText}>
-          👈 Swipe left to pass
-        </Text>
-        <Text style={styles.instructionText}>
-          Swipe right to make offer 👉
-        </Text>
+      {/* Action Buttons */}
+      <View style={styles.actions}>
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.passButton]}
+          onPress={() => swiperRef.current?.swipeLeft()}
+        >
+          <Text style={styles.actionText}>✕</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.superButton]}
+          onPress={() => handleSuperOffer(0)}
+        >
+          <Text style={styles.superEmoji}>⭐</Text>
+          <Text style={styles.superLabel}>1 🪙</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.likeButton]}
+          onPress={() => swiperRef.current?.swipeRight()}
+        >
+          <Text style={styles.actionText}>♥</Text>
+        </TouchableOpacity>
       </View>
 
+      {/* Instructions */}
+      <Text style={styles.instructions}>
+        Swipe left to pass • Right to offer • Up for Super
+      </Text>
+
+      {/* Cash Offer Modal */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -393,14 +483,20 @@ const submitLike = async () => {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Make Your Offer</Text>
+            <Text style={styles.modalTitle}>
+              {isSuperOffer ? '⭐ Super Offer' : 'Make an Offer'}
+            </Text>
             
+            {isSuperOffer && (
+              <View style={styles.superBadge}>
+                <Text style={styles.superBadgeText}>Costs 1 token • Unlocked immediately</Text>
+              </View>
+            )}
+
             <Text style={styles.modalSubtitle}>
-              Trade your <Text style={styles.bold}>{myItem?.title}</Text> for their <Text style={styles.bold}>{currentItem?.title}</Text>
+              Your {myItem?.title} for their {currentItem?.title}
             </Text>
 
-            <Text style={styles.cashLabel}>Cash to sweeten the deal (optional):</Text>
-            
             <View style={styles.cashOptions}>
               {CASH_OPTIONS.map((amount) => (
                 <TouchableOpacity
@@ -415,17 +511,11 @@ const submitLike = async () => {
                     styles.cashButtonText,
                     selectedCash === amount && styles.cashButtonTextSelected
                   ]}>
-                    {amount === 0 ? 'No cash\n1:1 trade' : `+$${amount}`}
+                    {amount === 0 ? 'No Cash' : `+$${amount}`}
                   </Text>
                 </TouchableOpacity>
               ))}
             </View>
-
-            <Text style={styles.cashHint}>
-              {selectedCash === 0 
-                ? "Fair trade - no cash needed" 
-                : `You're offering $${selectedCash} cash on top of your item`}
-            </Text>
 
             <View style={styles.modalButtons}>
               <TouchableOpacity 
@@ -436,10 +526,12 @@ const submitLike = async () => {
               </TouchableOpacity>
               
               <TouchableOpacity 
-                style={styles.confirmButton}
-                onPress={submitLike}
+                style={[styles.confirmButton, isSuperOffer && styles.superConfirmButton]}
+                onPress={submitOffer}
               >
-                <Text style={styles.confirmButtonText}>Send Offer</Text>
+                <Text style={styles.confirmButtonText}>
+                  {isSuperOffer ? 'Send Super (1 🪙)' : 'Send Offer'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -454,26 +546,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f5f5f5',
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  tradingHeader: {
+  headerContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     position: 'absolute',
     top: 50,
     left: 20,
     right: 20,
-    alignItems: 'center',
   },
-  tradingLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 5,
-  },
-  myItemBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  tradeItemInfo: {
+    flex: 1,
     backgroundColor: '#fff',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
+    padding: 10,
     borderRadius: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -481,31 +567,29 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 2,
   },
-  myItemText: {
-    fontSize: 14,
-    fontWeight: '600',
-    maxWidth: 150,
-    marginRight: 8,
-  },
-  tierDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 5,
-  },
-  myItemTier: {
-    fontSize: 12,
+  tradingLabel: {
+    fontSize: 11,
     color: '#666',
   },
-  header: {
-    fontSize: 24,
+  tradingItem: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  tokenBalance: {
+    backgroundColor: '#FFD700',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginLeft: 10,
+  },
+  tokenText: {
+    fontSize: 16,
     fontWeight: 'bold',
-    marginTop: 80,
-    marginBottom: 5,
   },
   subHeader: {
     fontSize: 14,
     color: '#666',
+    marginTop: 110,
     marginBottom: 10,
   },
   loadingText: {
@@ -536,33 +620,20 @@ const styles = StyleSheet.create({
     right: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     zIndex: 10,
   },
   leftBadges: {
     flexDirection: 'row',
-    gap: 8,
-    flexShrink: 1,
-    flexWrap: 'wrap',
   },
-  tierBadge: {
+  conditionBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
   },
-  tierBadgeText: {
+  badgeText: {
     color: '#fff',
     fontSize: 12,
-    fontWeight: 'bold',
-  },
-  diffBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-  },
-  diffBadgeText: {
-    color: '#fff',
-    fontSize: 11,
     fontWeight: 'bold',
   },
   distanceBadge: {
@@ -570,23 +641,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
-    marginLeft: 8,
   },
   distanceText: {
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
   },
-  cardImage: {
-    width: width * 0.9,
+  // Image container with tap zones
+  imageContainer: {
+    width: '100%',
     height: height * 0.3,
+    position: 'relative',
     marginTop: 60,
+  },
+  cardImage: {
+    width: '100%',
+    height: '100%',
     resizeMode: 'cover',
   },
   imagePlaceholder: {
-    width: width * 0.9,
-    height: height * 0.3,
-    marginTop: 60,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#e0e0e0',
     justifyContent: 'center',
     alignItems: 'center',
@@ -595,10 +670,60 @@ const styles = StyleSheet.create({
     color: '#666',
     fontSize: 18,
   },
+  // Progress indicator
+  progressContainer: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    right: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+    zIndex: 5,
+  },
+  progressDot: {
+    height: 4,
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    borderRadius: 2,
+  },
+  progressDotActive: {
+    backgroundColor: '#fff',
+  },
+  // Photo counter
+  photoCounter: {
+    position: 'absolute',
+    bottom: 10,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    zIndex: 5,
+  },
+  photoCounterText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  // Invisible tap zones
+  navZone: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: '50%',
+    zIndex: 10,
+  },
+  navZoneLeft: {
+    left: 0,
+  },
+  navZoneRight: {
+    right: 0,
+  },
+  // Card content
   cardContent: {
     padding: 20,
     flex: 1,
-    justifyContent: 'center',
   },
   title: {
     fontSize: 22,
@@ -608,39 +733,80 @@ const styles = StyleSheet.create({
   category: {
     fontSize: 14,
     color: '#666',
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  suggestion: {
-    fontSize: 13,
-    color: '#4CAF50',
-    fontStyle: 'italic',
+  description: {
+    fontSize: 14,
+    color: '#444',
+    lineHeight: 20,
+    marginBottom: 8,
   },
-  instructions: {
-    marginTop: 20,
+  tagsRow: {
+    flexDirection: 'row',
     alignItems: 'center',
   },
-  instructionText: {
-    color: '#666',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  button: {
-    backgroundColor: '#000',
-    padding: 15,
-    borderRadius: 25,
-    paddingHorizontal: 40,
-    marginTop: 20,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
+  tagsLabel: {
+    fontSize: 12,
+    color: '#4CAF50',
     fontWeight: 'bold',
   },
-  subText: {
-    color: '#999',
-    marginTop: 10,
-    textAlign: 'center',
-    paddingHorizontal: 40,
+  tagsText: {
+    fontSize: 12,
+    color: '#666',
+    flex: 1,
+  },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 20,
+    gap: 20,
+  },
+  actionButton: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  passButton: {
+    backgroundColor: '#ff4444',
+  },
+  superButton: {
+    backgroundColor: '#FFD700',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  likeButton: {
+    backgroundColor: '#4CAF50',
+  },
+  actionText: {
+    fontSize: 32,
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  superEmoji: {
+    fontSize: 28,
+  },
+  superLabel: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#000',
+  },
+  instructions: {
+    marginTop: 15,
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  instructionsText: {
+    color: '#666',
+    fontSize: 13,
   },
   modalOverlay: {
     flex: 1,
@@ -660,58 +826,51 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 15,
   },
+  superBadge: {
+    backgroundColor: '#FFF8E1',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#FFD700',
+  },
+  superBadgeText: {
+    fontSize: 14,
+    color: '#000',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
   modalSubtitle: {
     fontSize: 16,
     color: '#666',
     textAlign: 'center',
     marginBottom: 20,
-    lineHeight: 22,
-  },
-  bold: {
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  cashLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 15,
   },
   cashOptions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    marginBottom: 15,
+    marginBottom: 20,
   },
   cashButton: {
-    width: 80,
-    height: 60,
+    width: 70,
+    height: 50,
     backgroundColor: '#f5f5f5',
-    borderRadius: 10,
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
     margin: 5,
-    borderWidth: 2,
-    borderColor: 'transparent',
   },
   cashButtonSelected: {
     backgroundColor: '#4CAF50',
-    borderColor: '#2E7D32',
   },
   cashButtonText: {
     fontSize: 14,
     color: '#333',
-    textAlign: 'center',
   },
   cashButtonTextSelected: {
     color: '#fff',
     fontWeight: 'bold',
-  },
-  cashHint: {
-    fontSize: 14,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 20,
-    fontStyle: 'italic',
   },
   modalButtons: {
     flexDirection: 'row',
@@ -736,6 +895,9 @@ const styles = StyleSheet.create({
     padding: 15,
     borderRadius: 10,
     alignItems: 'center',
+  },
+  superConfirmButton: {
+    backgroundColor: '#FFD700',
   },
   confirmButtonText: {
     fontSize: 16,

@@ -35,7 +35,7 @@ export default function HomeScreen({ navigation }) {
         {/* Navigate to PostTab */}
         <TouchableOpacity 
           style={[styles.button, styles.outlineButton]}
-          onPress={() => navigation.navigate('PostTab')}
+          onPress={() => navigation.navigate('Post')}
         >
           <Text style={[styles.buttonText, styles.outlineText]}>Post an Item</Text>
         </TouchableOpacity>

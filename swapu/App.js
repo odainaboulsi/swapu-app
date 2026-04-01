@@ -14,6 +14,7 @@ import MyItemsScreen from './screens/MyItemsScreen';
 import SelectTradeItemScreen from './screens/SelectTradeItemScreen';
 import MatchScreen from './screens/MatchScreen';
 import MyMatchesScreen from './screens/MyMatchesScreen';
+import OffersScreen from './screens/OffersScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -59,7 +60,8 @@ function MatchesStack() {
   );
 }
 
-// Main app tabs
+// NEW ORDER: Home → Trade → Offers → Matches → My Items
+// PostTab removed from bottom nav
 function MainTabs() {
   return (
     <Tab.Navigator
@@ -88,11 +90,11 @@ function MainTabs() {
         }}
       />
       <Tab.Screen 
-        name="PostTab" 
-        component={PostScreen}
+        name="OffersTab" 
+        component={OffersScreen}
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="➕" label="Post" focused={focused} />
+            <TabIcon emoji="📬" label="Offers" focused={focused} />
           ),
         }}
       />
@@ -142,6 +144,8 @@ function Navigation() {
           <>
             <Stack.Screen name="MainTabs" component={MainTabs} />
             <Stack.Screen name="Match" component={MatchScreen} options={{ presentation: 'fullScreenModal' }} />
+            <Stack.Screen name="Post" component={PostScreen} options={{ presentation: 'card' }} />
+
           </>
         ) : (
           <Stack.Screen name="Auth" component={AuthStack} />
